@@ -1,14 +1,9 @@
-#pytorch with 410065006 parameters and correct o/p
-
-
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, classification_report
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import LogisticRegression
 
 # Check if GPU is available and set the device accordingly
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -40,14 +35,6 @@ def calculate_total_params(model):
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     return total_params
 
-# Vectorization and model training for Logistic Regression
-def train_logistic_regression(X_train, y_train):
-    vectorizer = TfidfVectorizer(max_features=8000)
-    X_train_vec = vectorizer.fit_transform(X_train)
-    model = LogisticRegression(max_iter=1000)
-    model.fit(X_train_vec, y_train)
-    return vectorizer, model
-
 # Function to load PyTorch model
 def load_pytorch_model(input_size, output_size):
     model = EmotionModel(input_size=input_size, output_size=output_size)
@@ -63,11 +50,6 @@ def predict_emotion_pytorch(text, model, vectorizer, label_mapping):
         _, predicted = torch.max(output, 1)
         emotion = list(label_mapping.keys())[list(label_mapping.values()).index(predicted.item())]
         return emotion
-
-# Prediction function for Logistic Regression
-def predict_emotion_logistic(text, vectorizer, model):
-    text_vec = vectorizer.transform([text])
-    return model.predict(text_vec)[0]
 
 # Load the dataset
 data_path = 'Emotion_final_with_predictions.csv'  # Ensure the path is correct for deployment
@@ -85,32 +67,54 @@ label_mapping = {emotion: idx for idx, emotion in enumerate(y.unique())}
 y_train_mapped = y_train.map(label_mapping)
 y_test_mapped = y_test.map(label_mapping)
 
-# Train logistic regression model
-vectorizer_logistic, logistic_regression_model = train_logistic_regression(X_train, y_train)
+# Vectorization using TF-IDF
+vectorizer_pytorch = TfidfVectorizer(max_features=8000)
+vectorizer_pytorch.fit(X_train)  # Fit the vectorizer on the training data
+X_train_vec = vectorizer_pytorch.transform(X_train).toarray()  # Transform training data
+X_test_vec = vectorizer_pytorch.transform(X_test).toarray()      # Transform test data
 
 # Load PyTorch model
-vectorizer_pytorch = TfidfVectorizer(max_features=8000)
-vectorizer_pytorch.fit(X_train)  # Same vectorizer used for training
 pytorch_model = load_pytorch_model(input_size=8000, output_size=len(label_mapping))
 
-# Calculate total parameters of the PyTorch model
-total_params = calculate_total_params(pytorch_model)
-print(f'Total Parameters in PyTorch Model: {total_params}')
+# Training loop
+criterion = nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(pytorch_model.parameters(), lr=0.001)
+num_epochs = 10  # You can adjust the number of epochs
+
+# Convert data to PyTorch tensors
+X_train_tensor = torch.tensor(X_train_vec, dtype=torch.float32).to(device)
+y_train_tensor = torch.tensor(y_train_mapped.values, dtype=torch.long).to(device)
+
+# Training the model
+for epoch in range(num_epochs):
+    pytorch_model.train()
+    optimizer.zero_grad()  # Zero the gradients
+    outputs = pytorch_model(X_train_tensor)  # Forward pass
+    loss = criterion(outputs, y_train_tensor)  # Compute loss
+    loss.backward()  # Backward pass
+    optimizer.step()  # Update weights
+    
+    if (epoch + 1) % 1 == 0:  # Print every epoch
+        print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {loss.item():.4f}')
+
+# Evaluate the model on test data
+pytorch_model.eval()
+with torch.no_grad():
+    X_test_tensor = torch.tensor(X_test_vec, dtype=torch.float32).to(device)
+    test_outputs = pytorch_model(X_test_tensor)
+    _, test_predicted = torch.max(test_outputs, 1)
+    
+# Convert predictions back to emotions
+predicted_emotions = [list(label_mapping.keys())[list(label_mapping.values()).index(predicted.item())] for predicted in test_predicted]
+
+# Print evaluation metrics
+accuracy = accuracy_score(y_test, predicted_emotions)
+print(f'PyTorch Model Accuracy: {accuracy:.4f}')
+print(classification_report(y_test, predicted_emotions))
 
 # Example complex sentence for emotion prediction
-complex_sentence = "im happy that he behaving like idots"
+complex_sentence = "I'm happy that he is behaving like an idiot"
 
-# Loop to make multiple predictions (you can adjust how many times you want to loop)
-for _ in range(3):  # Replace 3 with however many predictions you want to make
-    predicted_emotion_pytorch = predict_emotion_pytorch(complex_sentence, pytorch_model, vectorizer_pytorch, label_mapping)
-    print(f'Predicted Emotion (PyTorch Neural Network): {predicted_emotion_pytorch}')
-
-    predicted_emotion_logistic = predict_emotion_logistic(complex_sentence, vectorizer_logistic, logistic_regression_model)
-    print(f'Predicted Emotion (Logistic Regression): {predicted_emotion_logistic}')
-
-# Evaluate Logistic Regression model
-X_test_vec_logistic = vectorizer_logistic.transform(X_test)
-y_pred_logistic = logistic_regression_model.predict(X_test_vec_logistic)
-accuracy_logistic = accuracy_score(y_test, y_pred_logistic)
-print(f'Logistic Regression Accuracy: {accuracy_logistic:.4f}')
-print(classification_report(y_test, y_pred_logistic))
+# Make predictions using the PyTorch model
+predicted_emotion_pytorch = predict_emotion_pytorch(complex_sentence, pytorch_model, vectorizer_pytorch, label_mapping)
+print(f'Predicted Emotion (PyTorch Neural Network): {predicted_emotion_pytorch}')
